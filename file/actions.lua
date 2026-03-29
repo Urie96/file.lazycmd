@@ -1,227 +1,158 @@
 local M = {}
 
-local config = require 'file.config'
-local selected_paths = {}
-local clipboard_paths = {}
-local clipboard_operation = nil
-
-local function basename(path)
-  local value = tostring(path or '')
-  return value:match '([^/]+)$' or value
-end
-
-local function dirname(path)
-  local value = tostring(path or '')
-  if value == '' or value == '/' then return '/' end
-  local dir = value:match '^(.*)/[^/]+$'
-  if not dir or dir == '' then return '/' end
-  return dir
-end
-
-local function copy_list(paths)
+local function copy_list(items)
   local out = {}
-  for i = 1, #paths do
-    out[i] = paths[i]
+  for i = 1, #items do
+    out[i] = items[i]
   end
   return out
 end
 
-local function sorted_keys(set)
+local function sorted_values(map)
   local out = {}
-  for path, selected in pairs(set) do
-    if selected then table.insert(out, path) end
+  for _, value in pairs(map) do
+    table.insert(out, value)
   end
-  table.sort(out)
+  table.sort(out, function(a, b)
+    return tostring(a.id or '') < tostring(b.id or '')
+  end)
   return out
 end
 
-local function list_to_set(paths)
+local function list_to_map(items)
   local out = {}
-  for _, path in ipairs(paths or {}) do
-    out[path] = true
+  for _, item in ipairs(items or {}) do
+    out[item.id] = item
   end
   return out
 end
 
-local function page_path_from_fs_path(path)
-  local out = { 'file' }
-  local value = tostring(path or '')
-  if value == '' or value == '/' then return out end
-  for segment in value:gmatch '[^/]+' do
-    table.insert(out, segment)
-  end
-  return out
+local function basename(handle)
+  if type(handle) ~= 'table' then return '' end
+  return tostring(handle.name or handle.path or handle.id or '')
 end
 
-local function file_fs_path_from_page_path(path)
-  if type(path) ~= 'table' or path[1] ~= 'file' then
-    return nil, 'Paste is only available under /file'
-  end
-
-  local segments = {}
-  for i = 2, #path do
-    table.insert(segments, path[i])
-  end
-
-  if #segments == 0 then return '/' end
-  return '/' .. table.concat(segments, '/')
+function M.new(browser)
+  local self = {
+    browser = browser,
+    selected_handles = {},
+    clipboard_handles = {},
+    clipboard_operation = nil,
+  }
+  return setmetatable(self, { __index = M })
 end
 
-local function join_path(dir, name)
-  if dir == '/' then return '/' .. name end
-  return dir .. '/' .. name
+function M:clear_selected()
+  self.selected_handles = {}
 end
 
-local function notify_copy_ready(source_path, paste_key)
-  lc.notify(('Copied %s. Press %s to paste'):format(source_path, paste_key))
-end
-
-local function notify_multi_copy_ready(source_paths, paste_key)
-  if #source_paths == 1 then
-    notify_copy_ready(source_paths[1], paste_key)
-    return
-  end
-
-  lc.notify(('Copied %d entries. Press %s to paste'):format(#source_paths, paste_key))
-end
-
-local function notify_multi_cut_ready(source_paths, paste_key)
-  if #source_paths == 1 then
-    lc.notify(('Cut %s. Press %s to paste'):format(source_paths[1], paste_key))
-    return
-  end
-
-  lc.notify(('Cut %d entries. Press %s to paste'):format(#source_paths, paste_key))
-end
-
-local function unique_parent_dirs(paths)
-  local seen = {}
-  local out = {}
-  for _, path in ipairs(paths) do
-    local dir = dirname(path)
-    if not seen[dir] then
-      seen[dir] = true
-      table.insert(out, dir)
-    end
-  end
-  table.sort(out)
-  return out
-end
-
-local function invalidate_source_caches(paths)
-  for _, dir in ipairs(unique_parent_dirs(paths)) do
-    lc.api.clear_page_cache(page_path_from_fs_path(dir))
-  end
-end
-
-local function validate_target_paths(target_dir, source_paths)
-  local seen = {}
-  for _, source_path in ipairs(source_paths) do
-    local target_path = join_path(target_dir, basename(source_path))
-    if seen[target_path] then return nil, 'Multiple selected entries share the same name: ' .. target_path end
-    seen[target_path] = true
-
-    local existing = lc.fs.stat(target_path)
-    if existing.exists then return nil, 'Target already exists: ' .. target_path end
-  end
-
-  local ordered = {}
-  for path, _ in pairs(seen) do
-    table.insert(ordered, path)
-  end
-  table.sort(ordered)
-  return ordered
-end
-
-local function current_target_dir()
-  local current_path = lc.api.get_current_path()
-  local target_dir, err = file_fs_path_from_page_path(current_path)
-  if not target_dir then
-    lc.notify(err)
-    return nil
-  end
-
-  local stat = lc.fs.stat(target_dir)
-  if not stat.exists or not stat.is_dir then
-    lc.notify('Current page is not a directory: ' .. target_dir)
-    return nil
-  end
-  return target_dir
-end
-
-local function selected_or_hovered_paths()
-  local source_paths = sorted_keys(selected_paths)
-  if #source_paths > 0 then return source_paths end
+function M:selected_or_hovered_handles()
+  local handles = sorted_values(self.selected_handles)
+  if #handles > 0 then return handles end
 
   local entry = lc.api.page_get_hovered()
-  if not entry or not entry.path then return nil end
-  return { entry.path }
+  if not entry or not entry.handle then return nil end
+  return { entry.handle }
 end
 
-function M.register_paste_keymap(source_paths, operation)
-  local paste_key = config.get().keymap.paste
+function M:marker_color(handle)
+  local id = handle and handle.id
+  if not id then return nil end
+  if self.clipboard_handles[id] then
+    if self.clipboard_operation == 'copy' then return 'green' end
+    if self.clipboard_operation == 'move' then return 'red' end
+  end
+  if self.selected_handles[id] then return 'yellow' end
+  return nil
+end
+
+function M:toggle_hidden()
+  self.browser.config.show_hidden = not self.browser.config.show_hidden
+  self.browser:refresh_current_page()
+  return self.browser.config.show_hidden
+end
+
+function M:invalidate_parent_caches(handles)
+  local seen = {}
+  for _, handle in ipairs(handles or {}) do
+    local parent = self.browser.provider:parent(handle)
+    if parent and not seen[parent.id] then
+      seen[parent.id] = true
+      lc.api.clear_page_cache(self.browser.provider:encode_page_path(parent))
+    end
+  end
+end
+
+function M:current_target_dir(cb)
+  local current_path = lc.api.get_current_path()
+  local dir_handle, err = self.browser.provider:decode_page_path(current_path)
+  if not dir_handle then
+    lc.notify(err)
+    cb(nil)
+    return
+  end
+
+  self.browser.provider:stat(dir_handle, function(stat, stat_err)
+    if stat_err then
+      lc.notify('Failed to access directory: ' .. tostring(stat_err))
+      cb(nil)
+      return
+    end
+    if not stat.exists or not stat.is_dir then
+      lc.notify('Current page is not a directory: ' .. tostring(dir_handle.path or dir_handle.id))
+      cb(nil)
+      return
+    end
+    cb(dir_handle)
+  end)
+end
+
+function M:register_paste_keymap(source_handles, operation)
+  local paste_key = self.browser.config.keymap.paste
   if not paste_key or paste_key == '' then return end
 
-  local paths = copy_list(source_paths)
+  local handles = copy_list(source_handles)
   local action = operation == 'move' and 'move' or 'paste'
-  local desc = #paths == 1 and (action .. ' ' .. basename(paths[1])) or ((operation == 'move' and 'move ' or 'paste ') .. tostring(#paths) .. ' entries')
+  local desc = #handles == 1 and (action .. ' ' .. basename(handles[1]))
+    or ((operation == 'move' and 'move ' or 'paste ') .. tostring(#handles) .. ' entries')
 
   lc.keymap.set('main', paste_key, function()
-    local current_path = lc.api.get_current_path()
-    local target_dir, path_err = file_fs_path_from_page_path(current_path)
-    if not target_dir then
-      M.register_paste_keymap(paths, operation)
-      lc.notify(path_err)
-      return
-    end
-
-    local target_stat = lc.fs.stat(target_dir)
-    if not target_stat.exists or not target_stat.is_dir then
-      M.register_paste_keymap(paths, operation)
-      lc.notify('Current page is not a directory: ' .. target_dir)
-      return
-    end
-
-    local target_paths, target_err = validate_target_paths(target_dir, paths)
-    if not target_paths then
-      M.register_paste_keymap(paths, operation)
-      lc.notify(target_err)
-      return
-    end
-
-    local cmd = { operation == 'move' and 'mv' or 'cp' }
-    if operation ~= 'move' then table.insert(cmd, '-R') end
-    for _, source_path in ipairs(paths) do
-      table.insert(cmd, source_path)
-    end
-    table.insert(cmd, target_dir)
-
-    lc.system(cmd, function(out)
-      if out.code == 0 then
-        invalidate_source_caches(paths)
-        clipboard_paths = {}
-        clipboard_operation = nil
-        if #paths == 1 then
-          if operation == 'move' then
-            lc.notify(('Moved %s -> %s'):format(paths[1], target_paths[1]))
-          else
-            lc.notify(('Copied %s -> %s'):format(paths[1], target_paths[1]))
-          end
-        else
-          if operation == 'move' then
-            lc.notify(('Moved %d entries to %s'):format(#paths, target_dir))
-          else
-            lc.notify(('Copied %d entries to %s'):format(#paths, target_dir))
-          end
-        end
-        lc.cmd 'reload'
+    self:current_target_dir(function(target_dir)
+      if not target_dir then
+        self:register_paste_keymap(handles, operation)
         return
       end
 
-      M.register_paste_keymap(paths, operation)
-      local err = tostring(out.stderr or ''):trim()
-      if err == '' then err = 'exit code ' .. tostring(out.code) end
-      lc.notify((operation == 'move' and 'Move failed: ' or 'Copy failed: ') .. err)
+      local fn = operation == 'move' and self.browser.provider.move or self.browser.provider.copy
+      fn(self.browser.provider, handles, target_dir, function(ok, err, result)
+        if ok then
+          self:invalidate_parent_caches(handles)
+          self.clipboard_handles = {}
+          self.clipboard_operation = nil
+
+          local targets = result and result.targets or {}
+          if #handles == 1 then
+            local target = targets[1]
+            local target_path = target and (target.path or target.id) or (target_dir.path or target_dir.id)
+            if operation == 'move' then
+              lc.notify(('Moved %s -> %s'):format(handles[1].path or handles[1].id, target_path))
+            else
+              lc.notify(('Copied %s -> %s'):format(handles[1].path or handles[1].id, target_path))
+            end
+          else
+            if operation == 'move' then
+              lc.notify(('Moved %d entries to %s'):format(#handles, target_dir.path or target_dir.id))
+            else
+              lc.notify(('Copied %d entries to %s'):format(#handles, target_dir.path or target_dir.id))
+            end
+          end
+          self.browser:refresh_current_page()
+          return
+        end
+
+        self:register_paste_keymap(handles, operation)
+        lc.notify((operation == 'move' and 'Move failed: ' or 'Copy failed: ') .. tostring(err or 'unknown error'))
+      end)
     end)
   end, {
     once = true,
@@ -229,165 +160,214 @@ function M.register_paste_keymap(source_paths, operation)
   })
 end
 
-function M.is_selected(path)
-  return path ~= nil and selected_paths[path] == true
-end
-
-function M.marker_color(path)
-  if path == nil then return nil end
-  if clipboard_paths[path] then
-    if clipboard_operation == 'copy' then return 'green' end
-    if clipboard_operation == 'move' then return 'red' end
-  end
-  if selected_paths[path] then return 'yellow' end
-  return nil
-end
-
-function M.select_hovered_entry()
+function M:select_hovered_entry()
   local entry = lc.api.page_get_hovered()
-  if not entry or not entry.path then
+  if not entry or not entry.handle then
     lc.notify 'Nothing to select'
     return
   end
 
-  if selected_paths[entry.path] then
-    selected_paths[entry.path] = nil
+  local id = entry.handle.id
+  if self.selected_handles[id] then
+    self.selected_handles[id] = nil
   else
-    selected_paths[entry.path] = true
+    self.selected_handles[id] = entry.handle
   end
-  lc.cmd 'reload'
-  lc.cmd 'scroll_by 1'
+  self.browser:refresh_current_page(function()
+    lc.cmd 'scroll_by 1'
+  end)
 end
 
-function M.clear_selected()
-  selected_paths = {}
+function M:edit_hovered_entry()
+  local entry = lc.api.page_get_hovered()
+  if not entry or not entry.handle then
+    lc.notify 'Nothing to edit'
+    return
+  end
+  if entry.handle.is_dir then
+    lc.notify 'Cannot edit a directory'
+    return
+  end
+  if type(self.browser.provider.edit) ~= 'function' then
+    lc.notify('Edit is not supported by provider ' .. tostring(self.browser.provider.name or 'unknown'))
+    return
+  end
+  self.browser.provider:edit(entry.handle)
 end
 
-local function prompt_create(kind)
-  local target_dir = current_target_dir()
-  if not target_dir then return end
+function M:rename_hovered_entry()
+  local entry = lc.api.page_get_hovered()
+  if not entry or not entry.handle then
+    lc.notify 'Nothing to rename'
+    return
+  end
+  if type(self.browser.provider.rename) ~= 'function' then
+    lc.notify('Rename is not supported by provider ' .. tostring(self.browser.provider.name or 'unknown'))
+    return
+  end
 
-  local is_dir = kind == 'dir'
-  lc.input({
-    prompt = is_dir and 'New directory name' or 'New file name',
-    placeholder = is_dir and 'folder-name' or 'file.txt',
+  local old_handle = entry.handle
+  lc.input {
+    prompt = 'Rename',
+    placeholder = old_handle.name,
+    value = old_handle.name,
     on_submit = function(input)
       local name = tostring(input or ''):trim()
       if name == '' then
-        lc.notify(is_dir and 'Directory name cannot be empty' or 'File name cannot be empty')
+        lc.notify 'Name cannot be empty'
         return
       end
+      if name == old_handle.name then return end
       if name:find('/', 1, true) then
-        lc.notify('Name cannot contain /')
+        lc.notify 'Name cannot contain /'
         return
       end
 
-      local path = join_path(target_dir, name)
-      local existing = lc.fs.stat(path)
-      if existing.exists then
-        lc.notify('Target already exists: ' .. path)
-        return
-      end
-
-      if is_dir then
-        local ok, err = lc.fs.mkdir(path)
+      self.browser.provider:rename(old_handle, name, function(ok, err, result)
         if not ok then
-          lc.notify('Create directory failed: ' .. tostring(err or 'unknown error'))
+          lc.notify('Rename failed: ' .. tostring(err or 'unknown error'))
           return
         end
-        lc.notify('Created directory: ' .. path)
-      else
-        local ok, err = lc.fs.write_file_sync(path, '')
-        if not ok then
-          lc.notify('Create file failed: ' .. tostring(err or 'unknown error'))
-          return
-        end
-        lc.notify('Created file: ' .. path)
-      end
 
-      lc.api.clear_page_cache(page_path_from_fs_path(target_dir))
-      lc.cmd 'reload'
+        local parent = self.browser.provider:parent(old_handle)
+        if parent then
+          lc.api.clear_page_cache(self.browser.provider:encode_page_path(parent))
+        end
+
+        local target = result and result.target or self.browser.provider:join(parent or old_handle, name)
+        lc.notify(('Renamed %s -> %s'):format(old_handle.path or old_handle.id, target.path or target.id))
+        self.browser:refresh_current_page(function()
+          lc.api.page_set_hovered(self.browser.provider:encode_page_path(target))
+        end)
+      end)
     end,
-  })
+  }
 end
 
-function M.copy_hovered_entry()
-  local source_paths = selected_or_hovered_paths()
-  if not source_paths then
+local function prompt_create(self, kind)
+  self:current_target_dir(function(target_dir)
+    if not target_dir then return end
+
+    local is_dir = kind == 'dir'
+    lc.input({
+      prompt = is_dir and 'New directory name' or 'New file name',
+      placeholder = is_dir and 'folder-name' or 'file.txt',
+      on_submit = function(input)
+        local name = tostring(input or ''):trim()
+        if name == '' then
+          lc.notify(is_dir and 'Directory name cannot be empty' or 'File name cannot be empty')
+          return
+        end
+        if name:find('/', 1, true) then
+          lc.notify('Name cannot contain /')
+          return
+        end
+
+        local fn = is_dir and self.browser.provider.create_dir or self.browser.provider.create_file
+        fn(self.browser.provider, target_dir, name, function(ok, err)
+          if not ok then
+            if is_dir then
+              lc.notify('Create directory failed: ' .. tostring(err or 'unknown error'))
+            else
+              lc.notify('Create file failed: ' .. tostring(err or 'unknown error'))
+            end
+            return
+          end
+
+          local target = self.browser.provider:join(target_dir, name)
+          lc.notify((is_dir and 'Created directory: ' or 'Created file: ')
+            .. tostring(target.path))
+          lc.api.clear_page_cache(self.browser.provider:encode_page_path(target_dir))
+          self.browser:refresh_current_page(function()
+            lc.api.page_set_hovered(self.browser.provider:encode_page_path(target))
+          end)
+        end)
+      end,
+    })
+  end)
+end
+
+function M:copy_hovered_entry()
+  local source_handles = self:selected_or_hovered_handles()
+  if not source_handles then
     lc.notify 'Nothing to copy'
     return
   end
 
-  clipboard_paths = list_to_set(source_paths)
-  clipboard_operation = 'copy'
-  M.register_paste_keymap(source_paths, 'copy')
-  M.clear_selected()
-  lc.cmd 'reload'
-  notify_multi_copy_ready(source_paths, config.get().keymap.paste)
+  self.clipboard_handles = list_to_map(source_handles)
+  self.clipboard_operation = 'copy'
+  self:register_paste_keymap(source_handles, 'copy')
+  self:clear_selected()
+  self.browser:refresh_current_page()
+
+  if #source_handles == 1 then
+    lc.notify(('Copied %s. Press %s to paste'):format(source_handles[1].path or source_handles[1].id, self.browser.config.keymap.paste))
+  else
+    lc.notify(('Copied %d entries. Press %s to paste'):format(#source_handles, self.browser.config.keymap.paste))
+  end
 end
 
-function M.cut_hovered_entry()
-  local source_paths = selected_or_hovered_paths()
-  if not source_paths then
+function M:cut_hovered_entry()
+  local source_handles = self:selected_or_hovered_handles()
+  if not source_handles then
     lc.notify 'Nothing to cut'
     return
   end
 
-  clipboard_paths = list_to_set(source_paths)
-  clipboard_operation = 'move'
-  M.register_paste_keymap(source_paths, 'move')
-  M.clear_selected()
-  lc.cmd 'reload'
-  notify_multi_cut_ready(source_paths, config.get().keymap.paste)
+  self.clipboard_handles = list_to_map(source_handles)
+  self.clipboard_operation = 'move'
+  self:register_paste_keymap(source_handles, 'move')
+  self:clear_selected()
+  self.browser:refresh_current_page()
+
+  if #source_handles == 1 then
+    lc.notify(('Cut %s. Press %s to paste'):format(source_handles[1].path or source_handles[1].id, self.browser.config.keymap.paste))
+  else
+    lc.notify(('Cut %d entries. Press %s to paste'):format(#source_handles, self.browser.config.keymap.paste))
+  end
 end
 
-function M.delete_hovered_entry()
-  local source_paths = selected_or_hovered_paths()
-  if not source_paths then
+function M:delete_hovered_entry()
+  local source_handles = self:selected_or_hovered_handles()
+  if not source_handles then
     lc.notify 'Nothing to delete'
     return
   end
 
-  local prompt = #source_paths == 1
-      and ('Delete "' .. basename(source_paths[1]) .. '"?')
-    or ('Delete ' .. tostring(#source_paths) .. ' selected entries?')
+  local prompt = #source_handles == 1
+      and ('Delete "' .. basename(source_handles[1]) .. '"?')
+    or ('Delete ' .. tostring(#source_handles) .. ' selected entries?')
 
   lc.confirm({
     title = 'Delete File',
     prompt = prompt,
     on_confirm = function()
-      local errors = {}
-      for _, path in ipairs(source_paths) do
-        local ok, err = lc.fs.remove(path)
-        if not ok then
-          table.insert(errors, tostring(path) .. ': ' .. tostring(err or 'unknown error'))
+      self.browser.provider:remove(source_handles, function(ok, err)
+        self:clear_selected()
+        self:invalidate_parent_caches(source_handles)
+        self.browser:refresh_current_page()
+
+        if ok then
+          if #source_handles == 1 then
+            lc.notify('Deleted ' .. (source_handles[1].path or source_handles[1].id))
+          else
+            lc.notify(('Deleted %d entries'):format(#source_handles))
+          end
+          return
         end
-      end
 
-      M.clear_selected()
-      invalidate_source_caches(source_paths)
-      lc.cmd 'reload'
-
-      if #errors == 0 then
-        if #source_paths == 1 then
-          lc.notify('Deleted ' .. source_paths[1])
-        else
-          lc.notify(('Deleted %d entries'):format(#source_paths))
-        end
-        return
-      end
-
-      lc.notify('Delete failed: ' .. errors[1])
+        lc.notify('Delete failed: ' .. tostring(err or 'unknown error'))
+      end)
     end,
   })
 end
 
-function M.create_file()
-  prompt_create 'file'
+function M:create_file()
+  prompt_create(self, 'file')
 end
 
-function M.create_dir()
-  prompt_create 'dir'
+function M:create_dir()
+  prompt_create(self, 'dir')
 end
 
 return M

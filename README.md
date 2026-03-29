@@ -8,9 +8,11 @@
 - 列表区域目录显示为蓝色，文件显示为白色
 - 目录项通过 entry metatable 提供局部 `keymap`，支持用右键/回车进入
 - 文件项不会继续被当作目录进入，右键/回车只会刷新预览
-- `n`：在当前目录创建新文件
-- `N`：在当前目录创建新文件夹
-- `Space`：切换当前 hovered 条目的选中状态，并自动移动到下一个条目；选中标记显示为黄底单字符
+- `n`：在当前目录创建新文件，创建成功后会自动 hover 到新文件
+- `N`：在当前目录创建新文件夹，创建成功后会自动 hover 到新文件夹
+- `e`：用 `$VISUAL` / `$EDITOR`（默认 `vi`）编辑当前文件
+- `r`：重命名当前文件或目录
+- `Space`：切换当前 hovered 条目的选中状态，并在刷新后自动下移一项；选中标记显示为彩色 `▌`
 - `.`：切换是否显示隐藏文件
 - `yy`：如果存在已选条目，则只复制所有已选条目；否则复制当前 hovered 的文件或目录，并注册一次性的 `p`。复制后源条目标记变为绿底，粘贴成功后清除
 - `xx`：如果存在已选条目，则剪切所有已选条目；否则剪切当前 hovered 的文件或目录，并注册一次性的 `p`。剪切后源条目标记变为红底，粘贴成功后清除
@@ -58,8 +60,39 @@ require('file').setup {
 
 ## 结构
 
-- `file/init.lua`: 列表构建、路径处理、插件入口
-- `file/actions.lua`: 复制/粘贴动作与一次性 keymap 注册
-- `file/config.lua`: 配置读取与默认键位
-- `file/metas.lua`: 通过 metatable 注入 entry 级 `keymap` 和 `preview`
-- `file/preview.lua`: 目录/文件预览渲染
+- `file/init.lua`: 无状态工厂入口，同时兼容本地 `/file` 默认实例
+- `file/browser.lua`: 通用文件浏览器实例，负责列表构建和 entry 组装
+- `file/actions.lua`: 基于 browser/provider 实例的复制、粘贴、删除、创建等动作
+- `file/config.lua`: browser 实例配置构建
+- `file/metas.lua`: 给 entry 注入实例级 `keymap` 和 `preview`
+- `file/preview.lua`: 通用目录/文件预览渲染
+- `file/provider/local.lua`: 本地文件系统 provider，实现读写和路径编解码
+
+## 复用
+
+`require('file')` 现在既可以作为本地文件插件使用，也可以作为其他文件系统浏览插件的浏览器工厂：
+
+```lua
+local file = require 'file'
+local browser = file.new(my_provider, {
+  preview_max_chars = 60000,
+})
+```
+
+对外可复用的工厂函数：
+
+- `file.new(provider, opt)`: 使用自定义 provider 创建一个独立 browser 实例
+- `file.new_local(opt)`: 使用本地文件系统 provider 创建 browser 实例
+
+每个 browser 实例独立维护自己的选中态、剪贴板态、隐藏文件开关和预览 token，适合在 `sftp`、`adb`、`docker` 等插件中按 profile、设备、容器分别持有多个实例。
+
+provider 需要实现一组面向 callback 的方法，便于对接异步命令型后端：
+
+- `decode_page_path(path)` / `encode_page_path(handle)`
+- `parent(handle)` / `join(dir_handle, name)`
+- `list(dir_handle, cb)`
+- `stat(handle, cb)`
+- `read_file(handle, opts, cb)`
+- `create_file(dir_handle, name, cb)` / `create_dir(dir_handle, name, cb)`
+- `remove(handles, cb)`
+- `copy(handles, target_dir, cb)` / `move(handles, target_dir, cb)`

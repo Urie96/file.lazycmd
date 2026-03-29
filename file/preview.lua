@@ -1,11 +1,5 @@
 local M = {}
 
-local config = require 'file.config'
-
-local runtime = {
-  preview_token = 0,
-}
-
 local CODE_EXTENSIONS = {
   c = true,
   cc = true,
@@ -52,27 +46,16 @@ end
 local function line(parts) return lc.style.line(parts) end
 local function text(lines) return lc.style.text(lines) end
 
-local function sort_entries(entries)
-  table.sort(entries, function(a, b)
+local function sort_handles(handles)
+  table.sort(handles, function(a, b)
     if a.is_dir ~= b.is_dir then return a.is_dir end
     return string.lower(a.name) < string.lower(b.name)
   end)
-  return entries
+  return handles
 end
 
-local function is_hidden(name) return type(name) == 'string' and name:sub(1, 1) == '.' end
-
-local function read_children(path)
-  local entries, err = lc.fs.read_dir_sync(path)
-  if err then return nil, err end
-  entries = sort_entries(entries or {})
-  if config.get().show_hidden then return entries end
-
-  local visible = {}
-  for _, entry in ipairs(entries) do
-    if not is_hidden(entry.name) then table.insert(visible, entry) end
-  end
-  return visible
+local function is_hidden(name)
+  return type(name) == 'string' and name:sub(1, 1) == '.'
 end
 
 local function language_for(name)
@@ -83,44 +66,6 @@ local function language_for(name)
   if CODE_EXTENSIONS[ext] then return ext end
   return nil
 end
-
-local function directory_lines(path)
-  local entries, err = read_children(path)
-  if err then return {
-    line { span('Failed to read directory', 'red') },
-    line { span(err, 'red') },
-  } end
-
-  if #entries == 0 then return {
-    line { span('Empty directory', 'darkgray') },
-  } end
-
-  local lines = {
-    line { span(path, 'cyan') },
-    line { span(string.format('%d items', #entries), 'darkgray') },
-    line { '' },
-  }
-
-  for _, entry in ipairs(entries) do
-    table.insert(
-      lines,
-      line {
-        span(entry.name, entry.is_dir and 'blue' or 'white'),
-      }
-    )
-  end
-
-  return lines
-end
-
-local function next_preview_token()
-  runtime.preview_token = runtime.preview_token + 1
-  return runtime.preview_token
-end
-
-local function is_latest_preview_token(token) return runtime.preview_token == token end
-
-local function is_current_hover(entry) return lc.deep_equal(entry.path_parts or {}, lc.api.get_hovered_path() or {}) end
 
 local function render_file_preview(path, content, err, meta)
   if err then return text {
@@ -155,14 +100,122 @@ local function render_file_preview(path, content, err, meta)
   return text { content }
 end
 
-function M.dir_preview(entry, cb)
-  next_preview_token()
-  cb(text(directory_lines(entry.path)))
+function M.new(browser)
+  local self = {
+    browser = browser,
+    preview_token = 0,
+  }
+  return setmetatable(self, { __index = M })
 end
 
-function M.file_preview(entry, cb)
-  local token = next_preview_token()
-  local language = language_for(entry.path:match '[^/]+$' or entry.path)
+function M:next_preview_token()
+  self.preview_token = self.preview_token + 1
+  return self.preview_token
+end
+
+function M:is_latest_preview_token(token)
+  return self.preview_token == token
+end
+
+function M:is_current_hover(entry)
+  return lc.deep_equal(entry.path_parts or {}, lc.api.get_hovered_path() or {})
+end
+
+function M:run_debounced(entry, cb, work)
+  local token = self:next_preview_token()
+  local delay = tonumber(self.browser.config.preview_debounce_ms) or 0
+
+  local run = function()
+    if not self:is_latest_preview_token(token) then return end
+    if not self:is_current_hover(entry) then return end
+    work(token)
+  end
+
+  if delay <= 0 then
+    run()
+    return token
+  end
+
+  lc.defer_fn(run, delay)
+  return token
+end
+
+function M:read_children(handle, cb)
+  self.browser.provider:list(handle, function(entries, err)
+    if err then
+      cb(nil, err)
+      return
+    end
+
+    entries = sort_handles(entries or {})
+    if self.browser.config.show_hidden then
+      cb(entries)
+      return
+    end
+
+    local visible = {}
+    for _, entry in ipairs(entries) do
+      if not is_hidden(entry.name) then table.insert(visible, entry) end
+    end
+    cb(visible)
+  end)
+end
+
+function M:directory_lines(handle, cb)
+  self:read_children(handle, function(entries, err)
+    if err then
+      cb {
+        line { span('Failed to read directory', 'red') },
+        line { span(err, 'red') },
+      }
+      return
+    end
+
+    if #entries == 0 then
+      cb {
+        line { span('Empty directory', 'darkgray') },
+      }
+      return
+    end
+
+    local lines = {
+      line { span(handle.path or handle.id, 'cyan') },
+      line { span(string.format('%d items', #entries), 'darkgray') },
+      line { '' },
+    }
+
+    for _, entry in ipairs(entries) do
+      table.insert(lines, line {
+        span(entry.name, entry.is_dir and 'blue' or 'white'),
+      })
+    end
+
+    cb(lines)
+  end)
+end
+
+function M:dir_preview(entry, cb)
+  if self.browser.config.preview_mode == 'file-only' then
+    self:next_preview_token()
+    cb(text {
+      line { span('Directory', 'cyan') },
+      line { span(entry.handle.path or entry.handle.id, 'white') },
+    })
+    return
+  end
+
+  self:run_debounced(entry, cb, function(token)
+    self:directory_lines(entry.handle, function(lines)
+      if not self:is_latest_preview_token(token) then return end
+      if not self:is_current_hover(entry) then return end
+      cb(text(lines))
+    end)
+  end)
+end
+
+function M:file_preview(entry, cb)
+  local path = entry.handle.path or entry.handle.id
+  local language = language_for(path:match '[^/]+$' or path)
   if not language then
     cb(text {
       line { span('No preview for this file type', 'darkgray') },
@@ -170,15 +223,17 @@ function M.file_preview(entry, cb)
     return
   end
 
-  lc.fs.read_file(entry.path, { max_chars = config.get().preview_max_chars }, function(content, err, meta)
-    if not is_latest_preview_token(token) then return end
-    if not is_current_hover(entry) then return end
-    cb(render_file_preview(entry.path, content, err, meta))
+  self:run_debounced(entry, cb, function(token)
+    self.browser.provider:read_file(entry.handle, { max_chars = self.browser.config.preview_max_chars }, function(content, err, meta)
+      if not self:is_latest_preview_token(token) then return end
+      if not self:is_current_hover(entry) then return end
+      cb(render_file_preview(path, content, err, meta))
+    end)
   end)
 end
 
-function M.info_preview(entry, cb)
-  next_preview_token()
+function M:info_preview(entry, cb)
+  self:next_preview_token()
   cb(text {
     line { span(entry.message or 'file', entry.color or 'darkgray') },
   })
