@@ -1,4 +1,5 @@
 local Browser = require 'file.browser'
+local Icons = require 'file.icons'
 local LocalProvider = require 'file.provider.local'
 
 local M = {}
@@ -30,6 +31,10 @@ end
 
 function M.preview(entry, cb)
   return ensure_default_browser():preview(entry, cb)
+end
+
+function M.get_icon(target, opt)
+  return Icons.get_icon(target, opt)
 end
 
 function M.copy_hovered_entry()

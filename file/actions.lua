@@ -50,7 +50,7 @@ function M:selected_or_hovered_handles()
   local handles = sorted_values(self.selected_handles)
   if #handles > 0 then return handles end
 
-  local entry = lc.api.page_get_hovered()
+  local entry = lc.api.get_hovered()
   if not entry or not entry.handle then return nil end
   return { entry.handle }
 end
@@ -161,7 +161,7 @@ function M:register_paste_keymap(source_handles, operation)
 end
 
 function M:select_hovered_entry()
-  local entry = lc.api.page_get_hovered()
+  local entry = lc.api.get_hovered()
   if not entry or not entry.handle then
     lc.notify 'Nothing to select'
     return
@@ -179,7 +179,7 @@ function M:select_hovered_entry()
 end
 
 function M:edit_hovered_entry()
-  local entry = lc.api.page_get_hovered()
+  local entry = lc.api.get_hovered()
   if not entry or not entry.handle then
     lc.notify 'Nothing to edit'
     return
@@ -196,7 +196,7 @@ function M:edit_hovered_entry()
 end
 
 function M:rename_hovered_entry()
-  local entry = lc.api.page_get_hovered()
+  local entry = lc.api.get_hovered()
   if not entry or not entry.handle then
     lc.notify 'Nothing to rename'
     return
@@ -237,7 +237,7 @@ function M:rename_hovered_entry()
         local target = result and result.target or self.browser.provider:join(parent or old_handle, name)
         lc.notify(('Renamed %s -> %s'):format(old_handle.path or old_handle.id, target.path or target.id))
         self.browser:refresh_current_page(function()
-          lc.api.page_set_hovered(self.browser.provider:encode_page_path(target))
+          lc.api.set_hovered(self.browser.provider:encode_page_path(target))
         end)
       end)
     end,
@@ -279,7 +279,7 @@ local function prompt_create(self, kind)
             .. tostring(target.path))
           lc.api.clear_page_cache(self.browser.provider:encode_page_path(target_dir))
           self.browser:refresh_current_page(function()
-            lc.api.page_set_hovered(self.browser.provider:encode_page_path(target))
+            lc.api.set_hovered(self.browser.provider:encode_page_path(target))
           end)
         end)
       end,

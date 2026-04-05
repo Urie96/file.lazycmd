@@ -27,7 +27,7 @@ function M.new(opt)
   return setmetatable(self, { __index = M })
 end
 
-function M:handle(path, is_dir)
+function M:handle(path, is_dir, size)
   local value = tostring(path or '/')
   if value == '' then value = '/' end
   return {
@@ -35,6 +35,7 @@ function M:handle(path, is_dir)
     name = value == '/' and '/' or basename(value),
     path = value,
     is_dir = is_dir == true,
+    size = size,
   }
 end
 
@@ -74,7 +75,8 @@ function M:list(dir_handle, cb)
 
   local out = {}
   for _, entry in ipairs(entries or {}) do
-    table.insert(out, self:handle(join_path(dir_handle.path, entry.name), entry.is_dir))
+    local path = join_path(dir_handle.path, entry.name)
+    table.insert(out, self:handle(path, entry.is_dir, entry.size))
   end
   cb(out)
 end
@@ -193,6 +195,7 @@ function M:rename(handle, name, cb)
   lc.system({ 'mv', handle.path, target.path }, function(out)
     if out.code == 0 then
       target.is_dir = handle.is_dir
+      target.size = handle.size
       cb(true, nil, { target = target })
       return
     end

@@ -24,6 +24,11 @@ local function trim(s)
   return tostring(s):match '^%s*(.-)%s*$'
 end
 
+local function normalize_key(value, default)
+  if value == false then return false end
+  return trim(value) or default
+end
+
 local function normalize(next_cfg)
   local out = lc.tbl_extend('force', {}, next_cfg or {})
   out.preview_max_chars = math.max(tonumber(out.preview_max_chars) or defaults.preview_max_chars, 1024)
@@ -34,16 +39,16 @@ local function normalize(next_cfg)
   end
   out.show_hidden = out.show_hidden == true
   out.keymap = out.keymap or {}
-  out.keymap.new_file = trim(out.keymap.new_file) or defaults.keymap.new_file
-  out.keymap.new_dir = trim(out.keymap.new_dir) or defaults.keymap.new_dir
-  out.keymap.edit = trim(out.keymap.edit) or defaults.keymap.edit
-  out.keymap.rename = trim(out.keymap.rename) or defaults.keymap.rename
-  out.keymap.select = trim(out.keymap.select) or defaults.keymap.select
-  out.keymap.toggle_hidden = trim(out.keymap.toggle_hidden) or defaults.keymap.toggle_hidden
-  out.keymap.yank = trim(out.keymap.yank) or defaults.keymap.yank
-  out.keymap.cut = trim(out.keymap.cut) or defaults.keymap.cut
-  out.keymap.delete = trim(out.keymap.delete) or defaults.keymap.delete
-  out.keymap.paste = trim(out.keymap.paste) or defaults.keymap.paste
+  out.keymap.new_file = normalize_key(out.keymap.new_file, defaults.keymap.new_file)
+  out.keymap.new_dir = normalize_key(out.keymap.new_dir, defaults.keymap.new_dir)
+  out.keymap.edit = normalize_key(out.keymap.edit, defaults.keymap.edit)
+  out.keymap.rename = normalize_key(out.keymap.rename, defaults.keymap.rename)
+  out.keymap.select = normalize_key(out.keymap.select, defaults.keymap.select)
+  out.keymap.toggle_hidden = normalize_key(out.keymap.toggle_hidden, defaults.keymap.toggle_hidden)
+  out.keymap.yank = normalize_key(out.keymap.yank, defaults.keymap.yank)
+  out.keymap.cut = normalize_key(out.keymap.cut, defaults.keymap.cut)
+  out.keymap.delete = normalize_key(out.keymap.delete, defaults.keymap.delete)
+  out.keymap.paste = normalize_key(out.keymap.paste, defaults.keymap.paste)
   return out
 end
 

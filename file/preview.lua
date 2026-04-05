@@ -215,14 +215,6 @@ end
 
 function M:file_preview(entry, cb)
   local path = entry.handle.path or entry.handle.id
-  local language = language_for(path:match '[^/]+$' or path)
-  if not language then
-    cb(text {
-      line { span('No preview for this file type', 'darkgray') },
-    })
-    return
-  end
-
   self:run_debounced(entry, cb, function(token)
     self.browser.provider:read_file(entry.handle, { max_chars = self.browser.config.preview_max_chars }, function(content, err, meta)
       if not self:is_latest_preview_token(token) then return end

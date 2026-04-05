@@ -5,7 +5,8 @@
 ## 功能
 
 - 进入 `/file` 后直接从文件系统根目录 `/` 开始浏览
-- 列表区域目录显示为蓝色，文件显示为白色
+- 列表区域会在文件和目录名前显示图标；目录名仍显示为蓝色，文件名显示为白色
+- hover 文件时，底部左侧会显示该文件大小，样式为白底蓝字的 ` 608K `
 - 目录项通过 entry metatable 提供局部 `keymap`，支持用右键/回车进入
 - 文件项不会继续被当作目录进入，右键/回车只会刷新预览
 - `n`：在当前目录创建新文件，创建成功后会自动 hover 到新文件
@@ -66,7 +67,9 @@ require('file').setup {
 - `file/config.lua`: browser 实例配置构建
 - `file/metas.lua`: 给 entry 注入实例级 `keymap` 和 `preview`
 - `file/preview.lua`: 通用目录/文件预览渲染
-- `file/provider/local.lua`: 本地文件系统 provider，实现读写和路径编解码
+- `file/icons.lua`: 图标匹配封装，复用 vendored 的 nvim-web-devicons 扩展名映射
+- `file/icons_by_file_extension.lua`: 从 nvim-web-devicons 复制的扩展名图标和颜色表
+- `file/provider/local.lua`: 本地文件系统 provider，实现读写、路径编解码，并在 handle 上提供 `size`
 
 ## 复用
 
@@ -83,10 +86,11 @@ local browser = file.new(my_provider, {
 
 - `file.new(provider, opt)`: 使用自定义 provider 创建一个独立 browser 实例
 - `file.new_local(opt)`: 使用本地文件系统 provider 创建 browser 实例
+- `file.get_icon(target, opt)`: 根据文件名、路径或 handle 获取图标、颜色和图标元数据
 
 每个 browser 实例独立维护自己的选中态、剪贴板态、隐藏文件开关和预览 token，适合在 `sftp`、`adb`、`docker` 等插件中按 profile、设备、容器分别持有多个实例。
 
-provider 需要实现一组面向 callback 的方法，便于对接异步命令型后端：
+provider 需要实现一组面向 callback 的方法，便于对接异步命令型后端；其中 `list()` 返回的 handle 可以携带 `size` 等元信息，供 browser 渲染底部状态行：
 
 - `decode_page_path(path)` / `encode_page_path(handle)`
 - `parent(handle)` / `join(dir_handle, name)`

@@ -1,5 +1,6 @@
 local Actions = require 'file.actions'
 local config = require 'file.config'
+local Icons = require 'file.icons'
 local Metas = require 'file.metas'
 local Preview = require 'file.preview'
 
@@ -12,6 +13,37 @@ local function span(text, color)
 end
 
 local function line(parts) return lc.style.line(parts) end
+
+local function format_size(bytes)
+  local value = tonumber(bytes)
+  if not value or value < 0 then return nil end
+  if value < 1024 then return string.format('%dB', value) end
+
+  local units = { 'K', 'M', 'G', 'T', 'P' }
+  value = value / 1024
+  for i, unit in ipairs(units) do
+    if value < 1024 or i == #units then
+      if value >= 10 then
+        return string.format('%.0f%s', value, unit)
+      end
+      return string.format('%.1f%s', value, unit)
+    end
+    value = value / 1024
+  end
+end
+
+local function build_bottom_line(handle)
+  if not handle or handle.is_dir then return nil end
+
+  local size = format_size(handle.size)
+  if not size then return nil end
+
+  return line {
+    span('', 'white'),
+    span(' ' .. size .. ' ', 'blue'):bg('white'),
+    span('', 'white'),
+  }
+end
 
 local function sort_handles(handles)
   table.sort(handles, function(a, b)
@@ -83,6 +115,9 @@ function M:list(path, cb)
       local marker = span ' '
       if marker_color then marker = span('▌', marker_color) end
 
+      local icon, icon_color = Icons.get_icon(handle)
+      local name_color = handle.is_dir and 'blue' or 'white'
+
       table.insert(out, {
         key = handle.name,
         kind = handle.is_dir and 'dir' or 'file',
@@ -93,8 +128,10 @@ function M:list(path, cb)
         is_dir = handle.is_dir,
         display = line {
           marker,
-          span(handle.name, handle.is_dir and 'blue' or 'white'),
+          span(icon .. ' ', icon_color),
+          span(handle.name, name_color),
         },
+        bottom_line = build_bottom_line(handle),
       })
 
       ::continue::
@@ -109,7 +146,7 @@ function M:refresh_current_page(cb)
   local expected_path = lc.api.get_current_path() or {}
   self:list(expected_path, function(entries)
     if not lc.deep_equal(expected_path, lc.api.get_current_path() or {}) then return end
-    lc.api.page_set_entries(entries)
+    lc.api.set_entries(nil, entries)
     if cb then cb(entries) end
   end)
 end
